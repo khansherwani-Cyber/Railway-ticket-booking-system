@@ -1,161 +1,187 @@
-from flask import Flask, render_template, request, jsonify
-import random
+import re
+from flask import Flask, jsonify, request, render_template
 
 app = Flask(__name__)
 
-# ==========================================
-# OOP CODE STRUCTURE
-# ==========================================
+class Contact:
+    """
+    Represents an individual contact entity.
+    """
+    def __init__(self, name: str, phone: str, email: str, category: str):
+        self.name = name.strip()
+        self.phone = phone.strip()
+        self.email = email.strip()
+        self.category = category.strip()
 
-class Train:
-    def __init__(self, train_no, route, time, platform, seats, price):
-        self.train_no = train_no
-        self.route = route
-        self.time = time
-        self.platform = platform
-        self.total_seats = seats
-        self.price = price
-
-    def to_dict(self, current_bookings):
-        # Calculate remaining seats dynamically
-        booked_count = sum(1 for b in current_bookings if b.train_no == self.train_no)
+    def to_dict(self) -> dict:
+        """
+        Serializes the Contact instance into a dictionary.
+        """
         return {
-            "train_no": self.train_no,
-            "route": self.route,
-            "time": self.time,
-            "platform": self.platform,
-            "seats": self.total_seats - booked_count,
-            "price": self.price
+            "name": self.name,
+            "phone": self.phone,
+            "email": self.email,
+            "category": self.category
         }
 
-class Booking:
-    def __init__(self, ticket_no, train_no, name, father, cnic, time, platform, status, price):
-        self.ticket_no = ticket_no
-        self.train_no = train_no
-        self.name = name
-        self.father = father
-        self.cnic = cnic
-        self.time = time
-        self.platform = platform
-        self.status = status
-        self.price = price
 
-    def to_dict(self):
-        return self.__dict__
-
-class RailwaySystem:
+class PhoneBook:
+    """
+    Manages a collection of Contact entities using encapsulated storage.
+    """
     def __init__(self):
-        self.trains = []
-        self.bookings = []
-        self.ticket_counter = 1000
-        self.admin_password = "admin123"
-        self._initialize_default_trains()
+        # Using a dictionary with phone numbers as unique keys for O(1) lookups
+        self._contacts = {}
 
-    def _initialize_default_trains(self):
-        default_data = [
-            ("101", "Karachi to Lahore", "08:00 AM", "1", 50, 1200),
-            ("102", "Lahore to Islamabad", "09:30 AM", "2", 50, 900),
-            ("103", "Peshawar to Quetta", "10:00 AM", "3", 50, 1500),
-            ("104", "Multan to Faisalabad", "11:15 AM", "4", 50, 800),
-            ("105", "Hyderabad to Sukkur", "01:00 PM", "5", 50, 700),
-            ("106", "Rawalpindi to Bahawalpur", "02:30 PM", "6", 50, 1100),
-            ("107", "Gujranwala to Sialkot", "04:00 PM", "7", 50, 650),
-            ("108", "Layyah to Rahim Yar Khan", "06:45 PM", "8", 50, 2000),
-            ("109", "Islamabad to Rahim Yar Khan", "08:45 PM", "5", 50, 2500),
-            ("110", "Rahim Yar Khan to Hyderabad", "04:45 PM", "2", 50, 4000),
+    def add_contact(self, contact: Contact) -> None:
+        """
+        Adds a contact. Raises ValueError if the phone number already exists.
+        """
+        if contact.phone in self._contacts:
+            raise ValueError(f"A contact with phone number {contact.phone} already exists.")
+        self._contacts[contact.phone] = contact
+
+    def delete_contact(self, phone: str) -> bool:
+        """
+        Deletes a contact by phone number. Returns True if deleted, False if not found.
+        """
+        phone_clean = phone.strip()
+        if phone_clean in self._contacts:
+            del self._contacts[phone_clean]
+            return True
+        return False
+
+    def get_all_contacts(self) -> list:
+        """
+        Returns all contact dictionaries in the system.
+        """
+        return [contact.to_dict() for contact in self._contacts.values()]
+
+    def search_contacts(self, query: str) -> list:
+        """
+        Performs a case-insensitive search across name, phone, email, and category.
+        """
+        query = query.strip().lower()
+        if not query:
+            return self.get_all_contacts()
+
+        results = []
+        for contact in self._contacts.values():
+            if (query in contact.name.lower() or
+                query in contact.phone.lower() or
+                query in contact.email.lower() or
+                query in contact.category.lower()):
+                results.append(contact.to_dict())
+        return results
+
+    def load_sample_data(self) -> None:
+        """
+        Loads initial mock data on system startup.
+        """
+        samples = [
+            Contact("Jane Doe", "555-0199", "jane.doe@example.com", "Family"),
+            Contact("Alex Smith", "555-0142", "alex.smith@workplace.com", "Work"),
+            Contact("Emily Watson", "555-0177", "emily.w@domain.com", "Friends"),
+            Contact("Robert Johnson", "555-0155", "r.johnson@general.org", "General")
         ]
-        for t in default_data:
-            self.trains.append(Train(*t))
-
-    def get_all_trains(self):
-        return [t.to_dict(self.bookings) for t in self.trains]
-
-    def count_user_tickets(self, cnic):
-        return sum(1 for b in self.bookings if b.cnic == cnic)
-
-    def book_tickets(self, train_no, passenger_list):
-        train = next((t for t in self.trains if t.train_no == train_no), None)
-        if not train:
-            return {"success": False, "message": "Train not found."}
-
-        # Calculate dynamic available seats
-        booked_count = sum(1 for b in self.bookings if b.train_no == train_no)
-        available_seats = train.total_seats - booked_count
-
-        if len(passenger_list) > available_seats:
-            return {"success": False, "message": f"Not enough seats available. Only {available_seats} left."}
-        if len(passenger_list) > 5:
-            return {"success": False, "message": "You can book a maximum of 5 tickets at once."}
-
-        # First validation pass for CNIC limits
-        for p in passenger_list:
-            cnic = p.get('cnic', '').strip()
-            if len(cnic) != 13 or not cnic.isdigit():
-                return {"success": False, "message": f"Invalid CNIC format: {cnic}"}
-            if self.count_user_tickets(cnic) >= 2:
-                return {"success": False, "message": f"CNIC {cnic} already has 2 active tickets."}
-
-        # Process bookings
-        new_receipts = []
-        for p in passenger_list:
-            self.ticket_counter += 1
-            status = random.choice(["On Time", "Delayed"])
-            new_booking = Booking(
-                ticket_no=self.ticket_counter,
-                train_no=train_no,
-                name=p['name'].strip(),
-                father=p['father'].strip(),
-                cnic=p['cnic'].strip(),
-                time=train.time,
-                platform=train.platform,
-                status=status,
-                price=train.price
-            )
-            self.bookings.append(new_booking)
-            new_receipts.append(new_booking.to_dict())
-
-        return {"success": True, "tickets": new_receipts}
-
-    def cancel_ticket(self, ticket_no):
-        for b in self.bookings:
-            if b.ticket_no == ticket_no:
-                self.bookings.remove(b)
-                return {"success": True, "message": f"Ticket #{ticket_no} cancelled successfully."}
-        return {"success": False, "message": "Ticket number not found."}
+        for sample in samples:
+            try:
+                self.add_contact(sample)
+            except ValueError:
+                pass
 
 
-# Initialize the core OOP backend system
-system = RailwaySystem()
+# Instantiate the global phonebook instance and load sample data
+phonebook = PhoneBook()
+phonebook.load_sample_data()
 
-# ==========================================
-# FLASK ROUTING (Web Endpoints)
-# ==========================================
+# --- INPUT VALIDATION HELPERS ---
 
-@app.route('/')
-def home():
-    return render_template('index.html')
+def validate_contact_payload(data: dict) -> tuple:
+    """
+    Validates post request payloads. Returns (is_valid, error_message).
+    """
+    name = data.get("name", "").strip()
+    phone = data.get("phone", "").strip()
+    email = data.get("email", "").strip()
+    category = data.get("category", "").strip()
 
-@app.route('/api/trains', methods=['GET'])
-def api_get_trains():
-    return jsonify(system.get_all_trains())
+    if not name or not phone or not email or not category:
+        return False, "All fields (Name, Phone, Email, Category) are required."
 
-@app.route('/api/book', methods=['POST'])
-def api_book():
-    data = request.json
-    train_no = data.get('train_no')
-    passengers = data.get('passengers', [])
-    result = system.book_tickets(train_no, passengers)
-    return jsonify(result)
+    # Validate phone format: numbers, spaces, dashes, parentheses allowed
+    if not re.match(r"^[0-9\-\+\s\(\)]+$", phone):
+        return False, "Phone number contains invalid characters."
 
-@app.route('/api/cancel', methods=['POST'])
-def api_cancel():
-    data = request.json
+    # Validate email simple pattern
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return False, "Invalid email format."
+
+    valid_categories = {"Family", "Work", "Friends", "General"}
+    if category not in valid_categories:
+        return False, "Invalid category selection."
+
+    return True, ""
+
+
+# --- FLASK ROUTING ENDPOINTS ---
+
+@app.route("/")
+def index():
+    """
+    Renders the single-page application dashboard.
+    """
+    return render_template("phonebook.html")
+
+
+@app.route("/api/contacts", methods=["GET"])
+def get_contacts():
+    """
+    Endpoint to retrieve contacts. Supports an optional search filter query string parameter 'q'.
+    """
+    query = request.args.get("q", "")
+    if query:
+        results = phonebook.search_contacts(query)
+    else:
+        results = phonebook.get_all_contacts()
+    return jsonify(results), 200
+
+
+@app.route("/api/contacts", methods=["POST"])
+def add_contact():
+    """
+    Endpoint to add a new contact to the phonebook.
+    """
+    data = request.get_json() or {}
+    
+    # Validation step
+    is_valid, error_msg = validate_contact_payload(data)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+
     try:
-        t_no = int(data.get('ticket_no'))
-        result = system.cancel_ticket(t_no)
-        return jsonify(result)
-    except ValueError:
-        return jsonify({"success": False, "message": "Invalid Ticket Number format."})
+        new_contact = Contact(
+            name=data["name"],
+            phone=data["phone"],
+            email=data["email"],
+            category=data["category"]
+        )
+        phonebook.add_contact(new_contact)
+        return jsonify({"success": True, "message": "Contact added successfully."}), 201
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
-if __name__ == '__main__':
-    app.run(debug=True)
+
+@app.route("/api/contacts/<string:phone>", methods=["DELETE"])
+def delete_contact(phone):
+    """
+    Endpoint to remove an existing contact by phone number.
+    """
+    success = phonebook.delete_contact(phone)
+    if success:
+        return jsonify({"success": True, "message": "Contact deleted successfully."}), 200
+    return jsonify({"success": False, "error": "Contact not found."}), 404
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
